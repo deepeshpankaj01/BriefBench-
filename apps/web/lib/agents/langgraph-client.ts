@@ -2,33 +2,107 @@ import { BaseAgent, AgentTaskRequest, AgentTaskResponse, AgentTraceStep, AgentRe
 import { bifrostClient } from "../bifrost";
 import { FaultInjector, FaultCode } from "../failure/fault-injector";
 
+export interface LangGraphHealthStatus {
+  status: string;
+  service: string;
+  isAvailable: boolean;
+  endpoint: string;
+  latencyMs: number;
+  error?: string;
+}
+
 /**
  * LangGraph Agent Client
- * Communicates with the Python LangGraph FastAPI microservice via REST contract.
- * Also provides a high-fidelity local state-graph execution fallback when the Python
- * service is booting or unconfigured.
+ * Communicates with the Python LangGraph FastAPI microservice via Vercel service binding / REST contract.
+ * URL is injected via LANGGRAPH_AGENT_URL environment variable.
  */
 export class LangGraphAgentClient implements BaseAgent {
   public name = "BriefBench LangGraph Research Agent";
   public framework: "LANGGRAPH_PYTHON" = "LANGGRAPH_PYTHON";
   public version = "2.1.0";
-  private serviceUrl: string;
 
-  constructor() {
-    this.serviceUrl = process.env.LANGGRAPH_AGENT_URL || "http://127.0.0.1:8000";
+  /**
+   * Robust URL construction ensuring clean protocol and no trailing slashes.
+   */
+  public getBaseUrl(): string {
+    let raw = process.env.LANGGRAPH_AGENT_URL || "http://127.0.0.1:8000";
+    raw = raw.trim();
+    if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
+      raw = `http://${raw}`;
+    }
+    return raw.replace(/\/+$/, "");
+  }
+
+  /**
+   * Health check for GET /health on the Python FastAPI microservice.
+   */
+  async checkHealth(): Promise<LangGraphHealthStatus> {
+    const start = Date.now();
+    const baseUrl = this.getBaseUrl();
+    const endpoint = `${baseUrl}/health`;
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+      const res = await fetch(endpoint, {
+        method: "GET",
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+      const latencyMs = Date.now() - start;
+
+      if (res.ok) {
+        const data = await res.json();
+        return {
+          status: data.status || "healthy",
+          service: data.service || "briefbench-langgraph-agent",
+          isAvailable: true,
+          endpoint,
+          latencyMs,
+        };
+      }
+
+      return {
+        status: `HTTP_${res.status}`,
+        service: "briefbench-langgraph-agent",
+        isAvailable: false,
+        endpoint,
+        latencyMs,
+        error: `HTTP ${res.status}: ${res.statusText}`,
+      };
+    } catch (err: unknown) {
+      return {
+        status: "UNAVAILABLE",
+        service: "briefbench-langgraph-agent",
+        isAvailable: false,
+        endpoint,
+        latencyMs: Date.now() - start,
+        error: (err as Error).message || "Connection refused",
+      };
+    }
   }
 
   async execute(request: AgentTaskRequest): Promise<AgentTaskResponse> {
     const startTime = Date.now();
+    const baseUrl = this.getBaseUrl();
+    const targetEndpoint = `${baseUrl}/agent/run`;
+    const isProduction = process.env.NODE_ENV === "production";
 
     // 1. Attempt to call real Python FastAPI LangGraph service
+    let pythonError: string | null = null;
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 6000); // 6s quick check
+      const timeoutMs = request.executionLimits?.timeoutMs || 30000;
+      const timeoutId = setTimeout(() => controller.abort(), Math.min(timeoutMs, 15000));
 
-      const res = await fetch(`${this.serviceUrl}/agent/run`, {
+      const res = await fetch(targetEndpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-BriefBench-Client": "NextJS-Service-Binding",
+        },
         body: JSON.stringify(request),
         signal: controller.signal,
       });
@@ -43,18 +117,54 @@ export class LangGraphAgentClient implements BaseAgent {
           agentName: this.name,
           isSimulated: false,
         };
+      } else {
+        const errorText = await res.text().catch(() => "");
+        pythonError = `LangGraph service at ${targetEndpoint} returned HTTP ${res.status}: ${errorText || res.statusText}`;
       }
-    } catch {
-      // Python service not running or unreachable -> execute local state-machine emulation
+    } catch (err: unknown) {
+      pythonError = `Failed to connect to LangGraph service at ${targetEndpoint}: ${(err as Error).message}`;
     }
 
-    // 2. High-Fidelity LangGraph State Graph Emulation
-    // Follows the exact state machine nodes:
-    // [START] -> [planning_node] -> [evidence_analysis_node] -> [synthesis_node] -> [validation_node] -> [END]
+    // 2. Strict Production Guard: Do NOT silently emulate in production!
+    if (isProduction) {
+      const totalDuration = Date.now() - startTime;
+      const errorMsg = pythonError || `LangGraph service is unreachable at ${targetEndpoint}`;
+
+      const failureTrace: AgentTraceStep = {
+        stepNumber: 1,
+        eventType: "TASK_RECEIVED",
+        name: "LangGraph Service Dispatch Failed",
+        status: "ERROR",
+        errorDetails: errorMsg,
+        durationMs: totalDuration,
+        timestamp: new Date().toISOString(),
+      };
+
+      return {
+        agentName: this.name,
+        framework: this.framework,
+        version: this.version,
+        status: "FAILED",
+        durationMs: totalDuration,
+        totalTokens: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        estimatedCostUsd: null,
+        toolCallCount: 0,
+        retryCount: 0,
+        report: null,
+        traces: [failureTrace],
+        errorMessage: errorMsg,
+        isSimulated: false,
+      };
+    }
+
+    // 3. Local Development Demo Emulation (Non-Production Only)
+    // Follows the exact state machine nodes and explicitly flags isSimulated: true
     const traces: AgentTraceStep[] = [];
     let stepNumber = 1;
     let retryCount = 0;
-    const toolCallCount = 2; // LangGraph uses explicit graph tool nodes
+    const toolCallCount = 2;
 
     const addTrace = (
       eventType: AgentTraceStep["eventType"],
@@ -80,9 +190,10 @@ export class LangGraphAgentClient implements BaseAgent {
 
     try {
       // Node 1: Task Input
-      addTrace("TASK_RECEIVED", "LangGraph StateGraph Initialized", "SUCCESS", {
+      addTrace("TASK_RECEIVED", "LangGraph StateGraph Initialized (Local Emulation)", "SUCCESS", {
         workflow: "BriefBenchMeetingResearchGraph",
         stateSchema: "ResearchState(task, evidence, plan, draft, review)",
+        note: `Python microservice not reachable at ${targetEndpoint}; local emulation active for development`,
       });
 
       // Node 2: Planning Node
@@ -182,7 +293,7 @@ export class LangGraphAgentClient implements BaseAgent {
         retryCount,
         report: parsedReport,
         traces,
-        isSimulated: completion.isSimulated,
+        isSimulated: true, // Explicitly marked as simulated in fallback
       };
     } catch (err: unknown) {
       const totalDuration = Date.now() - startTime;

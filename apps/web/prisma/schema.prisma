@@ -1,9 +1,12 @@
+// Production PostgreSQL Schema for BriefBench Vercel Deployment
+// Compatible with Neon Serverless Postgres, Supabase, AWS RDS, etc.
+
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -37,7 +40,7 @@ model Agent {
   name          String
   slug          String
   framework     String   // NATIVE_TS, LANGGRAPH_PYTHON, HTTP_CUSTOM
-  description   String?
+  description   String?  @db.Text
   endpointUrl   String?
   isEnabled     Boolean  @default(true)
   createdAt     DateTime @default(now())
@@ -54,11 +57,11 @@ model AgentVersion {
   id              String   @id @default(cuid())
   agentId         String
   version         String   // e.g. "1.0.0"
-  configHash      String   // SHA-256 of configuration
-  model           String   // e.g. "gpt-4o", "claude-3-5-sonnet" via Bifrost
-  systemPrompt    String
-  toolDefinitions String   // JSON array of available tools
-  parameters      String   // JSON parameters (temperature, max_steps, etc.)
+  configHash      String
+  model           String
+  systemPrompt    String   @db.Text
+  toolDefinitions String   @db.Text
+  parameters      String   @db.Text
   createdAt       DateTime @default(now())
 
   agent           Agent      @relation(fields: [agentId], references: [id], onDelete: Cascade)
@@ -69,8 +72,8 @@ model BenchmarkSuite {
   id          String   @id @default(cuid())
   workspaceId String
   name        String
-  description String?
-  category    String   @default("MEETING_RESEARCH") // RESEARCH, REASONING, ROBUSTNESS
+  description String?  @db.Text
+  category    String   @default("MEETING_RESEARCH")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -82,11 +85,11 @@ model BenchmarkTask {
   id                String   @id @default(cuid())
   suiteId           String
   title             String
-  objective         String
+  objective         String   @db.Text
   companyName       String?
-  meetingContext    String   // JSON: participants, date, agenda, industry
-  requirements      String   // JSON: specific constraints and expected sections
-  expectedCitations String?  // JSON: ground-truth reference sources
+  meetingContext    String   @db.Text
+  requirements      String   @db.Text
+  expectedCitations String?  @db.Text
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -98,9 +101,9 @@ model BenchmarkTask {
 model EvidenceSnapshot {
   id            String   @id @default(cuid())
   taskId        String
-  digest        String   // SHA-256 cryptographic digest of combined sources
+  digest        String   // SHA-256
   title         String
-  description   String?
+  description   String?  @db.Text
   isFrozen      Boolean  @default(true)
   version       Int      @default(1)
   totalSources  Int      @default(0)
@@ -116,12 +119,12 @@ model EvidenceSource {
   snapshotId         String
   url                String
   title              String
-  excerpt            String
-  fullContent        String
+  excerpt            String   @db.Text
+  fullContent        String   @db.Text
   domain             String
   publishedAt        String?
   retrievalTimestamp DateTime @default(now())
-  metadata           String?  // JSON
+  metadata           String?  @db.Text
 
   snapshot           EvidenceSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
 }
@@ -134,7 +137,7 @@ model BenchmarkExperiment {
   name               String
   repetitions        Int       @default(3)
   concurrencyLimit   Int       @default(1)
-  status             String    @default("PENDING") // PENDING, RUNNING, COMPLETED, FAILED
+  status             String    @default("PENDING")
   faultProfileId     String?
   isDemo             Boolean   @default(false)
   startedAt          DateTime?
@@ -154,7 +157,7 @@ model AgentRun {
   agentId            String
   agentVersionId     String
   repetitionIndex    Int       @default(1)
-  status             String    @default("PENDING") // PENDING, RUNNING, SUCCESS, FAILED, TIMEOUT
+  status             String    @default("PENDING")
   durationMs         Int?
   totalTokens        Int?
   promptTokens       Int?
@@ -162,8 +165,8 @@ model AgentRun {
   estimatedCostUsd   Float?
   toolCallCount      Int       @default(0)
   retryCount         Int       @default(0)
-  outputReport       String?   // JSON structured meeting research brief
-  errorMessage       String?
+  outputReport       String?   @db.Text
+  errorMessage       String?   @db.Text
   isDemo             Boolean   @default(false)
   startedAt          DateTime?
   completedAt        DateTime?
@@ -178,28 +181,28 @@ model AgentRun {
 }
 
 model TraceEvent {
-  id           String   @id @default(cuid())
-  runId        String
-  stepNumber   Int
-  eventType    String   // TASK_RECEIVED, EVIDENCE_LOADED, PLANNING_DONE, MODEL_REQUEST, TOOL_CALLED, etc.
-  name         String
-  inputPayload String?  // JSON
-  outputPayload String? // JSON
-  durationMs   Int?
-  tokenUsage   Int?
-  status       String   @default("SUCCESS") // SUCCESS, ERROR, RETRY, SKIPPED
-  errorDetails String?
-  timestamp    DateTime @default(now())
+  id            String   @id @default(cuid())
+  runId         String
+  stepNumber    Int
+  eventType     String
+  name          String
+  inputPayload  String?  @db.Text
+  outputPayload String?  @db.Text
+  durationMs    Int?
+  tokenUsage    Int?
+  status        String   @default("SUCCESS")
+  errorDetails  String?  @db.Text
+  timestamp     DateTime @default(now())
 
-  run          AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  run           AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 }
 
 model ToolCall {
   id              String   @id @default(cuid())
   runId           String
   toolName        String
-  arguments       String   // JSON
-  result          String?  // JSON
+  arguments       String   @db.Text
+  result          String?  @db.Text
   isFaultInjected Boolean  @default(false)
   durationMs      Int?
   createdAt       DateTime @default(now())
@@ -212,17 +215,17 @@ model Evaluation {
   runId                 String   @unique
   judgeModel            String   @default("bifrost/gpt-4o")
   rubricVersion         String   @default("1.0.0")
-  overallScore          Float    // 0.0 - 100.0
-  factualAccuracy       Float    // Weight: 25%
-  evidenceSupport       Float    // Weight: 20%
-  taskCompletion        Float    // Weight: 15%
-  researchCompleteness  Float    // Weight: 15%
-  actionability         Float    // Weight: 10%
-  instructionAdherence  Float    // Weight: 10%
-  outputConsistency     Float    // Weight: 5%
-  reasoning             String   // Detailed evaluation explanation
-  unsupportedClaims     String   // JSON array of flagged claims
-  verifiedCitations     String   // JSON array of verified citation URLs
+  overallScore          Float
+  factualAccuracy       Float
+  evidenceSupport       Float
+  taskCompletion        Float
+  researchCompleteness  Float
+  actionability         Float
+  instructionAdherence  Float
+  outputConsistency     Float
+  reasoning             String   @db.Text
+  unsupportedClaims     String   @db.Text
+  verifiedCitations     String   @db.Text
   createdAt             DateTime @default(now())
 
   run                   AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
@@ -230,12 +233,12 @@ model Evaluation {
 
 model FaultProfile {
   id               String   @id @default(cuid())
-  code             String   @unique // MODEL_UNAVAILABLE, MODEL_TIMEOUT, RATE_LIMIT, etc.
+  code             String   @unique
   name             String
-  description      String
-  faultType        String   // LATENCY, HTTP_ERROR, TOOL_ERROR, MALFORMED_DATA, CORRUPT_EVIDENCE
-  triggerStep      String   // MODEL_REQUEST, TOOL_EXECUTION, EVIDENCE_RETRIEVAL
-  triggerCondition String?  // JSON condition
+  description      String   @db.Text
+  faultType        String
+  triggerStep      String
+  triggerCondition String?  @db.Text
   isSimulated      Boolean  @default(true)
   failureRate      Float    @default(1.0)
   createdAt        DateTime @default(now())
@@ -246,13 +249,13 @@ model FaultProfile {
 model IntegrationConnection {
   id                String    @id @default(cuid())
   workspaceId       String
-  provider          String    // BIFROST, TAVILY
-  status            String    @default("CONNECTED") // CONNECTED, ERROR, UNCONFIGURED
+  provider          String
+  status            String    @default("CONNECTED")
   endpointUrl       String?
   model             String?
   lastHealthCheckAt DateTime?
-  lastErrorMessage  String?
-  telemetry         String?   // JSON telemetry data
+  lastErrorMessage  String?   @db.Text
+  telemetry         String?   @db.Text
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
@@ -262,10 +265,10 @@ model IntegrationConnection {
 model AuditEvent {
   id          String   @id @default(cuid())
   workspaceId String
-  action      String   // EXPERIMENT_CREATED, AGENT_MODIFIED, FAULT_INJECTED, etc.
+  action      String
   entityType  String
   entityId    String
-  details     String?  // JSON
+  details     String?  @db.Text
   actorEmail  String   @default("system@briefbench.ai")
   createdAt   DateTime @default(now())
 
