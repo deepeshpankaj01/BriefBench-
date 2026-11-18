@@ -1,0 +1,16 @@
+{
+  "name": "briefbench",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=apps/web",
+    "build": "npm run build --workspace=apps/web",
+    "start": "npm run start --workspace=apps/web",
+    "test": "npm run test --workspace=apps/web",
+    "db:push": "npm run prisma:db-push --workspace=apps/web",
+    "db:seed": "npm run prisma:seed --workspace=apps/web"
+  }
+}

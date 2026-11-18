@@ -1,0 +1,273 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  role      String   @default("ENGINEER")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Workspace {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  isDemo      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  agents          Agent[]
+  suites          BenchmarkSuite[]
+  experiments     BenchmarkExperiment[]
+  integrations    IntegrationConnection[]
+  auditEvents     AuditEvent[]
+}
+
+model Agent {
+  id            String   @id @default(cuid())
+  workspaceId   String
+  name          String
+  slug          String
+  framework     String   // NATIVE_TS, LANGGRAPH_PYTHON, HTTP_CUSTOM
+  description   String?
+  endpointUrl   String?
+  isEnabled     Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  versions      AgentVersion[]
+  runs          AgentRun[]
+
+  @@unique([workspaceId, slug])
+}
+
+model AgentVersion {
+  id              String   @id @default(cuid())
+  agentId         String
+  version         String   // e.g. "1.0.0"
+  configHash      String   // SHA-256 of configuration
+  model           String   // e.g. "gpt-4o", "claude-3-5-sonnet" via Bifrost
+  systemPrompt    String
+  toolDefinitions String   // JSON array of available tools
+  parameters      String   // JSON parameters (temperature, max_steps, etc.)
+  createdAt       DateTime @default(now())
+
+  agent           Agent      @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  runs            AgentRun[]
+}
+
+model BenchmarkSuite {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  description String?
+  category    String   @default("MEETING_RESEARCH") // RESEARCH, REASONING, ROBUSTNESS
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace   Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  tasks       BenchmarkTask[]
+}
+
+model BenchmarkTask {
+  id                String   @id @default(cuid())
+  suiteId           String
+  title             String
+  objective         String
+  companyName       String?
+  meetingContext    String   // JSON: participants, date, agenda, industry
+  requirements      String   // JSON: specific constraints and expected sections
+  expectedCitations String?  // JSON: ground-truth reference sources
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  suite             BenchmarkSuite       @relation(fields: [suiteId], references: [id], onDelete: Cascade)
+  snapshots         EvidenceSnapshot[]
+  experiments       BenchmarkExperiment[]
+}
+
+model EvidenceSnapshot {
+  id            String   @id @default(cuid())
+  taskId        String
+  digest        String   // SHA-256 cryptographic digest of combined sources
+  title         String
+  description   String?
+  isFrozen      Boolean  @default(true)
+  version       Int      @default(1)
+  totalSources  Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  task          BenchmarkTask         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  sources       EvidenceSource[]
+  experiments   BenchmarkExperiment[]
+}
+
+model EvidenceSource {
+  id                 String   @id @default(cuid())
+  snapshotId         String
+  url                String
+  title              String
+  excerpt            String
+  fullContent        String
+  domain             String
+  publishedAt        String?
+  retrievalTimestamp DateTime @default(now())
+  metadata           String?  // JSON
+
+  snapshot           EvidenceSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+}
+
+model BenchmarkExperiment {
+  id                 String    @id @default(cuid())
+  workspaceId        String
+  taskId             String
+  snapshotId         String
+  name               String
+  repetitions        Int       @default(3)
+  concurrencyLimit   Int       @default(1)
+  status             String    @default("PENDING") // PENDING, RUNNING, COMPLETED, FAILED
+  faultProfileId     String?
+  isDemo             Boolean   @default(false)
+  startedAt          DateTime?
+  completedAt        DateTime?
+  createdAt          DateTime  @default(now())
+
+  workspace          Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  task               BenchmarkTask    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  snapshot           EvidenceSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  faultProfile       FaultProfile?    @relation(fields: [faultProfileId], references: [id])
+  runs               AgentRun[]
+}
+
+model AgentRun {
+  id                 String    @id @default(cuid())
+  experimentId       String
+  agentId            String
+  agentVersionId     String
+  repetitionIndex    Int       @default(1)
+  status             String    @default("PENDING") // PENDING, RUNNING, SUCCESS, FAILED, TIMEOUT
+  durationMs         Int?
+  totalTokens        Int?
+  promptTokens       Int?
+  completionTokens   Int?
+  estimatedCostUsd   Float?
+  toolCallCount      Int       @default(0)
+  retryCount         Int       @default(0)
+  outputReport       String?   // JSON structured meeting research brief
+  errorMessage       String?
+  isDemo             Boolean   @default(false)
+  startedAt          DateTime?
+  completedAt        DateTime?
+  createdAt          DateTime  @default(now())
+
+  experiment         BenchmarkExperiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  agent              Agent               @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  agentVersion       AgentVersion        @relation(fields: [agentVersionId], references: [id], onDelete: Cascade)
+  traceEvents        TraceEvent[]
+  toolCalls          ToolCall[]
+  evaluation         Evaluation?
+}
+
+model TraceEvent {
+  id           String   @id @default(cuid())
+  runId        String
+  stepNumber   Int
+  eventType    String   // TASK_RECEIVED, EVIDENCE_LOADED, PLANNING_DONE, MODEL_REQUEST, TOOL_CALLED, etc.
+  name         String
+  inputPayload String?  // JSON
+  outputPayload String? // JSON
+  durationMs   Int?
+  tokenUsage   Int?
+  status       String   @default("SUCCESS") // SUCCESS, ERROR, RETRY, SKIPPED
+  errorDetails String?
+  timestamp    DateTime @default(now())
+
+  run          AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+}
+
+model ToolCall {
+  id              String   @id @default(cuid())
+  runId           String
+  toolName        String
+  arguments       String   // JSON
+  result          String?  // JSON
+  isFaultInjected Boolean  @default(false)
+  durationMs      Int?
+  createdAt       DateTime @default(now())
+
+  run             AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+}
+
+model Evaluation {
+  id                    String   @id @default(cuid())
+  runId                 String   @unique
+  judgeModel            String   @default("bifrost/gpt-4o")
+  rubricVersion         String   @default("1.0.0")
+  overallScore          Float    // 0.0 - 100.0
+  factualAccuracy       Float    // Weight: 25%
+  evidenceSupport       Float    // Weight: 20%
+  taskCompletion        Float    // Weight: 15%
+  researchCompleteness  Float    // Weight: 15%
+  actionability         Float    // Weight: 10%
+  instructionAdherence  Float    // Weight: 10%
+  outputConsistency     Float    // Weight: 5%
+  reasoning             String   // Detailed evaluation explanation
+  unsupportedClaims     String   // JSON array of flagged claims
+  verifiedCitations     String   // JSON array of verified citation URLs
+  createdAt             DateTime @default(now())
+
+  run                   AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+}
+
+model FaultProfile {
+  id               String   @id @default(cuid())
+  code             String   @unique // MODEL_UNAVAILABLE, MODEL_TIMEOUT, RATE_LIMIT, etc.
+  name             String
+  description      String
+  faultType        String   // LATENCY, HTTP_ERROR, TOOL_ERROR, MALFORMED_DATA, CORRUPT_EVIDENCE
+  triggerStep      String   // MODEL_REQUEST, TOOL_EXECUTION, EVIDENCE_RETRIEVAL
+  triggerCondition String?  // JSON condition
+  isSimulated      Boolean  @default(true)
+  failureRate      Float    @default(1.0)
+  createdAt        DateTime @default(now())
+
+  experiments      BenchmarkExperiment[]
+}
+
+model IntegrationConnection {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  provider          String    // BIFROST, TAVILY
+  status            String    @default("CONNECTED") // CONNECTED, ERROR, UNCONFIGURED
+  endpointUrl       String?
+  model             String?
+  lastHealthCheckAt DateTime?
+  lastErrorMessage  String?
+  telemetry         String?   // JSON telemetry data
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  workspace         Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+model AuditEvent {
+  id          String   @id @default(cuid())
+  workspaceId String
+  action      String   // EXPERIMENT_CREATED, AGENT_MODIFIED, FAULT_INJECTED, etc.
+  entityType  String
+  entityId    String
+  details     String?  // JSON
+  actorEmail  String   @default("system@briefbench.ai")
+  createdAt   DateTime @default(now())
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}

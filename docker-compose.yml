@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    container_name: briefbench-web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://briefbench:briefbench_password@postgres:5432/briefbench?schema=public
+      - BIFROST_API_KEY=${BIFROST_API_KEY:-}
+      - BIFROST_BASE_URL=${BIFROST_BASE_URL:-https://api.bifrost.maxim.ai/v1}
+      - BIFROST_MODEL=${BIFROST_MODEL:-gpt-4o}
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - LANGGRAPH_AGENT_URL=http://langgraph-agent:8000
+      - NEXT_PUBLIC_DEMO_MODE=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      langgraph-agent:
+        condition: service_started
+
+  langgraph-agent:
+    build:
+      context: ./apps/langgraph-agent
+      dockerfile: Dockerfile
+    container_name: briefbench-langgraph-agent
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - BIFROST_API_KEY=${BIFROST_API_KEY:-}
+      - BIFROST_BASE_URL=${BIFROST_BASE_URL:-https://api.bifrost.maxim.ai/v1}
+      - BIFROST_MODEL=${BIFROST_MODEL:-gpt-4o}
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: briefbench-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=briefbench
+      - POSTGRES_PASSWORD=briefbench_password
+      - POSTGRES_DB=briefbench
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U briefbench -d briefbench"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+    driver: local
